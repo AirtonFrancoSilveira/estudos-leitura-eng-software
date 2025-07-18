@@ -77,7 +77,15 @@
     ├── Distribuição (API Gateway, Database per Service)
     └── Consistência (Eventual Consistency, Saga Pattern)
 
-11. Casos de Uso Avançados (10-Casos-Uso-Avancados.md)
+11. AWS System Design Patterns (12-AWS-System-Design-Patterns.md)
+    ├── Padrões de Resiliência com AWS (Lambda, DynamoDB, Step Functions)
+    ├── Padrões de Escalabilidade (Auto Scaling, ElastiCache, ECS)
+    ├── Padrões de Distribuição (API Gateway, CloudFront, Route 53)
+    ├── Arquiteturas de Referência (Banking, E-commerce)
+    ├── AWS Well-Architected Framework (6 Pilares)
+    └── Mapeamento Padrão → Serviços AWS
+
+12. Casos de Uso Avançados (10-Casos-Uso-Avancados.md)
     ├── High-Performance Systems
     ├── Scalability Patterns
     ├── Disaster Recovery
@@ -103,6 +111,7 @@
 - [ ] Monitoramento
 - [ ] Casos de Uso Bancários
 - [ ] System Design Patterns
+- [ ] AWS System Design Patterns
 
 ### **Fase 4: Simulação de Entrevista (Semana 7)**
 - [ ] Revisão geral
@@ -155,6 +164,8 @@
 - [ ] Configurar mensageria e eventos
 - [ ] Monitorar aplicações em produção
 - [ ] Aplicar padrões de System Design (resiliência, escalabilidade, distribuição)
+- [ ] Implementar System Design Patterns específicos da AWS
+- [ ] Aplicar AWS Well-Architected Framework
 
 ### **Soft Skills:**
 - [ ] Explico conceitos de forma clara
