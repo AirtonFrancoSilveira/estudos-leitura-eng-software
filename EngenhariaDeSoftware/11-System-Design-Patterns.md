@@ -19,6 +19,93 @@ Padrões de resiliência são como sistemas de segurança de um prédio: protege
 ### **🎓 Padrões Fundamentais:**
 
 **1. Circuit Breaker Pattern**
+
+### **🎯 Quando Usar:**
+- ✅ **Chamadas para serviços externos** (APIs de terceiros, bancos, gateways de pagamento)
+- ✅ **Operações que podem falhar em cascata** (microserviços interdependentes)
+- ✅ **Sistemas com SLA críticos** (banking, e-commerce, sistemas de emergência)
+- ✅ **Quando você precisa de fallback rápido** (evitar timeouts longos)
+
+### **🚫 Quando NÃO Usar:**
+- ❌ **Operações internas simples** (validações, cálculos locais)
+- ❌ **Sistemas com baixo volume** (menos de 100 requests/minuto)
+- ❌ **Quando não há estratégia de fallback** (sem plano B)
+
+### **💡 Casos de Uso Reais:**
+
+**🏦 Banking - Verificação de CPF**
+```java
+// Cenário: Validação de CPF via Serasa/SPC
+@Service
+public class CpfValidationService {
+    
+    private final CircuitBreaker serasaCircuitBreaker;
+    private final CircuitBreaker spcCircuitBreaker;
+    
+    public CpfValidationResult validateCpf(String cpf) {
+        // Tentar Serasa primeiro
+        try {
+            return serasaCircuitBreaker.execute(
+                () -> serasaClient.validateCpf(cpf),
+                () -> tryAlternativeValidation(cpf)
+            );
+        } catch (Exception e) {
+            // Fallback para SPC
+            return spcCircuitBreaker.execute(
+                () -> spcClient.validateCpf(cpf),
+                () -> CpfValidationResult.temporarilyUnavailable()
+            );
+        }
+    }
+}
+```
+
+**🛒 E-commerce - Processamento de Pagamento**
+```java
+// Cenário: Gateway de pagamento pode ficar indisponível
+@Service
+public class PaymentGatewayService {
+    
+    public PaymentResult processPayment(PaymentRequest request) {
+        return paymentCircuitBreaker.execute(
+            () -> primaryGateway.processPayment(request),
+            () -> {
+                // Fallback strategies
+                if (request.getAmount().compareTo(BigDecimal.valueOf(100)) < 0) {
+                    return processViaSecondaryGateway(request);
+                } else {
+                    return PaymentResult.queueForLaterProcessing(request);
+                }
+            }
+        );
+    }
+}
+```
+
+**🚀 Streaming - Recomendações**
+```java
+// Cenário: Sistema de ML para recomendações pode falhar
+@Service
+public class RecommendationService {
+    
+    public List<Content> getRecommendations(String userId) {
+        return mlCircuitBreaker.execute(
+            () -> mlRecommendationEngine.getPersonalizedContent(userId),
+            () -> {
+                // Fallback para recomendações populares
+                return contentService.getPopularContent(
+                    userService.getUserPreferences(userId)
+                );
+            }
+        );
+    }
+}
+```
+
+### **⚖️ Trade-offs:**
+- **✅ Prós:** Previne falhas em cascata, melhora disponibilidade, reduz latência em falhas
+- **❌ Contras:** Complexidade adicional, pode mascarar problemas reais, configuração delicada
+
 ```java
 // Implementação avançada do Circuit Breaker
 @Component
@@ -133,6 +220,146 @@ public class PaymentService {
 ```
 
 **2. Bulkhead Pattern**
+
+### **🎯 Quando Usar:**
+- ✅ **Operações com diferentes prioridades** (críticas vs. não-críticas)
+- ✅ **Recursos limitados** (threads, conexões de banco, memória)
+- ✅ **Isolamento de falhas** (uma operação não pode afetar outras)
+- ✅ **SLAs diferentes** (operações com requisitos de performance distintos)
+
+### **🚫 Quando NÃO Usar:**
+- ❌ **Sistemas com recursos abundantes** (sub-utilização de recursos)
+- ❌ **Operações homogêneas** (todas têm a mesma prioridade)
+- ❌ **Sistemas simples** (overhead desnecessário)
+
+### **💡 Casos de Uso Reais:**
+
+**🏦 Banking - Segregação de Operações**
+```java
+// Cenário: Banco com operações críticas e não-críticas
+@Configuration
+public class BankingBulkheadConfig {
+    
+    @Bean("transactionExecutor")
+    public Executor transactionExecutor() {
+        // Pool dedicado para transações financeiras
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(20);
+        executor.setMaxPoolSize(50);
+        executor.setQueueCapacity(200);
+        executor.setThreadNamePrefix("banking-transaction-");
+        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
+        return executor;
+    }
+    
+    @Bean("reportingExecutor")
+    public Executor reportingExecutor() {
+        // Pool separado para relatórios (não-crítico)
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(3);
+        executor.setMaxPoolSize(8);
+        executor.setQueueCapacity(50);
+        executor.setThreadNamePrefix("banking-report-");
+        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.DiscardPolicy());
+        return executor;
+    }
+    
+    @Bean("notificationExecutor")
+    public Executor notificationExecutor() {
+        // Pool para notificações (baixa prioridade)
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(2);
+        executor.setMaxPoolSize(5);
+        executor.setQueueCapacity(100);
+        executor.setThreadNamePrefix("banking-notification-");
+        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.DiscardOldestPolicy());
+        return executor;
+    }
+}
+
+@Service
+public class BankingOperationsService {
+    
+    @Async("transactionExecutor")
+    public CompletableFuture<TransactionResult> processPixTransfer(PixTransferRequest request) {
+        // Operação crítica - pool dedicado de alta prioridade
+        return CompletableFuture.completedFuture(pixService.processTransfer(request));
+    }
+    
+    @Async("reportingExecutor")
+    public CompletableFuture<Report> generateAccountStatement(String accountId) {
+        // Relatório - pool separado, não afeta transações
+        return CompletableFuture.completedFuture(reportService.generateStatement(accountId));
+    }
+    
+    @Async("notificationExecutor")
+    public CompletableFuture<Void> sendTransactionNotification(String customerId, TransactionEvent event) {
+        // Notificação - pool de baixa prioridade
+        notificationService.sendNotification(customerId, event);
+        return CompletableFuture.completedFuture(null);
+    }
+}
+```
+
+**🛒 E-commerce - Isolamento por Função**
+```java
+// Cenário: E-commerce com diferentes tipos de carga
+@Service
+public class EcommerceService {
+    
+    @Async("orderProcessingExecutor")
+    public CompletableFuture<OrderResult> processOrder(OrderRequest request) {
+        // Processamento de pedidos - crítico
+        return CompletableFuture.completedFuture(orderService.processOrder(request));
+    }
+    
+    @Async("inventoryUpdateExecutor")
+    public CompletableFuture<Void> updateInventory(InventoryUpdateRequest request) {
+        // Atualização de estoque - importante mas não crítico
+        inventoryService.updateStock(request);
+        return CompletableFuture.completedFuture(null);
+    }
+    
+    @Async("analyticsExecutor")
+    public CompletableFuture<Void> trackUserBehavior(UserBehaviorEvent event) {
+        // Analytics - pode ser processado com delay
+        analyticsService.track(event);
+        return CompletableFuture.completedFuture(null);
+    }
+}
+```
+
+**🏥 Healthcare - Isolamento por Criticidade**
+```java
+// Cenário: Sistema hospitalar com diferentes níveis de urgência
+@Service
+public class HospitalService {
+    
+    @Async("emergencyExecutor")
+    public CompletableFuture<EmergencyResponse> handleEmergency(EmergencyRequest request) {
+        // Emergências - máxima prioridade
+        return CompletableFuture.completedFuture(emergencyService.handleEmergency(request));
+    }
+    
+    @Async("appointmentExecutor")
+    public CompletableFuture<AppointmentResult> scheduleAppointment(AppointmentRequest request) {
+        // Agendamentos - prioridade média
+        return CompletableFuture.completedFuture(appointmentService.schedule(request));
+    }
+    
+    @Async("billingExecutor")
+    public CompletableFuture<Void> processBilling(BillingRequest request) {
+        // Faturamento - pode ser processado offline
+        billingService.processBilling(request);
+        return CompletableFuture.completedFuture(null);
+    }
+}
+```
+
+### **⚖️ Trade-offs:**
+- **✅ Prós:** Isolamento de falhas, priorização de recursos, SLAs diferenciados
+- **❌ Contras:** Complexidade de configuração, possível sub-utilização de recursos, overhead de gerenciamento
+
 ```java
 // Implementação do padrão Bulkhead
 @Configuration
@@ -204,6 +431,176 @@ public class BankingService {
 ```
 
 **3. Retry Pattern com Backoff**
+
+### **🎯 Quando Usar:**
+- ✅ **Falhas transientes** (timeouts de rede, indisponibilidade temporária)
+- ✅ **Operações idempotentes** (podem ser repetidas sem efeitos colaterais)
+- ✅ **Serviços externos instáveis** (APIs de terceiros, infraestrutura cloud)
+- ✅ **Operações críticas** (não podem falhar por problemas temporários)
+
+### **🚫 Quando NÃO Usar:**
+- ❌ **Operações não-idempotentes** (transferências bancárias, criação de recursos)
+- ❌ **Erros permanentes** (401 Unauthorized, 404 Not Found, validation errors)
+- ❌ **Operações em tempo real** (quando delay não é aceitável)
+- ❌ **Recursos sob pressão** (pode piorar a situação)
+
+### **💡 Casos de Uso Reais:**
+
+**🏦 Banking - Consulta ao Banco Central**
+```java
+// Cenário: Consulta à API do BACEN para validar instituições
+@Service
+public class BacenIntegrationService {
+    
+    private final RetryTemplate retryTemplate;
+    
+    public BankInstitution getBankInfo(String bankCode) {
+        RetryPolicy policy = RetryPolicy.exponentialBackoff(
+            3,      // 3 tentativas
+            2000,   // 2 segundos inicial
+            2.0     // dobrar a cada tentativa
+        );
+        
+        return retryTemplate.execute(
+            () -> {
+                ResponseEntity<BankInstitution> response = bacenRestTemplate.getForEntity(
+                    "/api/v1/institutions/{code}", BankInstitution.class, bankCode);
+                
+                if (response.getStatusCode().is5xxServerError()) {
+                    throw new BacenUnavailableException("BACEN API returned: " + response.getStatusCode());
+                }
+                
+                return response.getBody();
+            },
+            policy
+        );
+    }
+}
+```
+
+**📱 Mobile Banking - Sincronização de Dados**
+```java
+// Cenário: App mobile sincronizando dados com servidor
+@Service
+public class MobileSyncService {
+    
+    public SyncResult syncTransactionHistory(String accountId, String lastSyncTimestamp) {
+        RetryPolicy policy = RetryPolicy.exponentialBackoff(
+            5,      // 5 tentativas (mobile pode ter rede instável)
+            1000,   // 1 segundo inicial
+            1.5     // crescimento mais suave
+        );
+        
+        return retryTemplate.execute(
+            () -> {
+                SyncRequest request = new SyncRequest(accountId, lastSyncTimestamp);
+                return bankingApiClient.syncTransactions(request);
+            },
+            policy
+        );
+    }
+}
+```
+
+**🛒 E-commerce - Processamento de Pedidos**
+```java
+// Cenário: Integração com fornecedores pode falhar temporariamente
+@Service
+public class SupplierIntegrationService {
+    
+    public ProductAvailability checkProductAvailability(String productId) {
+        RetryPolicy policy = RetryPolicy.exponentialBackoff(
+            3,      // 3 tentativas
+            500,    // 500ms inicial (operação rápida)
+            2.0
+        );
+        
+        return retryTemplate.execute(
+            () -> {
+                try {
+                    return supplierApiClient.checkAvailability(productId);
+                } catch (SocketTimeoutException e) {
+                    throw new SupplierTemporaryException("Supplier timeout", e);
+                } catch (ConnectException e) {
+                    throw new SupplierTemporaryException("Connection refused", e);
+                }
+            },
+            policy
+        );
+    }
+}
+```
+
+**☁️ Cloud Services - Upload de Arquivos**
+```java
+// Cenário: Upload para S3 pode falhar por questões de rede
+@Service
+public class FileUploadService {
+    
+    public UploadResult uploadToS3(FileUploadRequest request) {
+        RetryPolicy policy = RetryPolicy.exponentialBackoff(
+            4,      // 4 tentativas (uploads podem ser lentos)
+            3000,   // 3 segundos inicial
+            1.5     // crescimento moderado
+        );
+        
+        return retryTemplate.execute(
+            () -> {
+                try {
+                    return s3Client.uploadFile(request);
+                } catch (AmazonS3Exception e) {
+                    if (e.getStatusCode() >= 400 && e.getStatusCode() < 500) {
+                        // Erro do cliente - não retry
+                        throw new NonRetryableException("Client error: " + e.getMessage(), e);
+                    }
+                    // Erro do servidor - retry
+                    throw new S3TemporaryException("S3 server error", e);
+                }
+            },
+            policy
+        );
+    }
+}
+```
+
+**🔄 Microservices - Comunicação Entre Serviços**
+```java
+// Cenário: Serviços podem estar temporariamente indisponíveis
+@Service
+public class UserServiceClient {
+    
+    public UserProfile getUserProfile(String userId) {
+        RetryPolicy policy = RetryPolicy.exponentialBackoff(
+            3,      // 3 tentativas
+            1000,   // 1 segundo inicial
+            2.0
+        );
+        
+        return retryTemplate.execute(
+            () -> {
+                ResponseEntity<UserProfile> response = userServiceRestTemplate.getForEntity(
+                    "/users/{id}/profile", UserProfile.class, userId);
+                
+                if (response.getStatusCode().is5xxServerError()) {
+                    throw new UserServiceTemporaryException("User service unavailable");
+                }
+                
+                if (response.getStatusCode() == HttpStatus.NOT_FOUND) {
+                    throw new UserNotFoundException("User not found: " + userId);
+                }
+                
+                return response.getBody();
+            },
+            policy
+        );
+    }
+}
+```
+
+### **⚖️ Trade-offs:**
+- **✅ Prós:** Aumenta confiabilidade, lida com falhas transientes, melhora experiência do usuário
+- **❌ Contras:** Pode mascarar problemas reais, aumenta latência, pode sobrecarregar recursos
+
 ```java
 // Implementação avançada do padrão Retry
 @Component
@@ -309,6 +706,251 @@ public class ExternalServiceClient {
 ```
 
 **4. Rate Limiting Pattern**
+
+### **🎯 Quando Usar:**
+- ✅ **Proteção contra abuso** (ataques DDoS, spam, scrapers)
+- ✅ **Recursos limitados** (APIs custosas, processamento intensivo)
+- ✅ **Fair use policy** (garantir acesso equitativo aos recursos)
+- ✅ **Monetização** (limites por plano de assinatura)
+
+### **🚫 Quando NÃO Usar:**
+- ❌ **Sistemas internos confiáveis** (overhead desnecessário)
+- ❌ **Recursos abundantes** (quando não há limitação real)
+- ❌ **Operações críticas** (que não podem ser limitadas)
+
+### **💡 Casos de Uso Reais:**
+
+**🏦 Banking - Proteção de APIs**
+```java
+// Cenário: Banco com diferentes limites por tipo de operação
+@Component
+public class BankingRateLimitingInterceptor implements HandlerInterceptor {
+    
+    private final RateLimiter rateLimiter;
+    
+    @Override
+    public boolean preHandle(HttpServletRequest request, HttpServletResponse response, 
+                           Object handler) throws Exception {
+        
+        String customerId = extractCustomerId(request);
+        String endpoint = request.getRequestURI();
+        String method = request.getMethod();
+        
+        // Diferentes limites por tipo de operação
+        RateLimitConfig config = getRateLimitConfig(endpoint, method);
+        String key = customerId + ":" + endpoint + ":" + method;
+        
+        if (!rateLimiter.isAllowed(key, config.getMaxRequests(), config.getWindow())) {
+            response.setStatus(HttpStatus.TOO_MANY_REQUESTS.value());
+            response.setHeader("X-RateLimit-Limit", String.valueOf(config.getMaxRequests()));
+            response.setHeader("X-RateLimit-Window", config.getWindow().toString());
+            response.getWriter().write("Rate limit exceeded for " + endpoint);
+            return false;
+        }
+        
+        return true;
+    }
+    
+    private RateLimitConfig getRateLimitConfig(String endpoint, String method) {
+        // Transferências PIX: 50 por minuto
+        if (endpoint.startsWith("/api/pix/transfer")) {
+            return new RateLimitConfig(50, Duration.ofMinutes(1));
+        }
+        
+        // Consultas de saldo: 200 por minuto
+        if (endpoint.startsWith("/api/accounts/balance")) {
+            return new RateLimitConfig(200, Duration.ofMinutes(1));
+        }
+        
+        // Relatórios: 10 por hora
+        if (endpoint.startsWith("/api/reports")) {
+            return new RateLimitConfig(10, Duration.ofHours(1));
+        }
+        
+        // Autenticação: 5 tentativas por minuto
+        if (endpoint.startsWith("/api/auth/login")) {
+            return new RateLimitConfig(5, Duration.ofMinutes(1));
+        }
+        
+        // Default: 1000 por hora
+        return new RateLimitConfig(1000, Duration.ofHours(1));
+    }
+}
+```
+
+**🛒 E-commerce - Proteção Contra Scrapers**
+```java
+// Cenário: E-commerce protegendo catálogo contra bots
+@Service
+public class ProductCatalogService {
+    
+    private final RateLimiter rateLimiter;
+    
+    public ProductListResponse getProducts(ProductSearchRequest request, String clientId) {
+        
+        // Diferentes limites por tipo de cliente
+        RateLimitConfig config = getClientRateLimit(clientId);
+        
+        if (!rateLimiter.isAllowed(clientId + ":product_search", 
+                                 config.getMaxRequests(), 
+                                 config.getWindow())) {
+            throw new RateLimitExceededException("Too many product searches");
+        }
+        
+        return productRepository.searchProducts(request);
+    }
+    
+    private RateLimitConfig getClientRateLimit(String clientId) {
+        ClientType type = clientService.getClientType(clientId);
+        
+        switch (type) {
+            case PREMIUM:
+                return new RateLimitConfig(10000, Duration.ofHours(1));
+            case BUSINESS:
+                return new RateLimitConfig(5000, Duration.ofHours(1));
+            case REGULAR:
+                return new RateLimitConfig(1000, Duration.ofHours(1));
+            case SUSPECTED_BOT:
+                return new RateLimitConfig(100, Duration.ofHours(1));
+            default:
+                return new RateLimitConfig(500, Duration.ofHours(1));
+        }
+    }
+}
+```
+
+**📱 API Gateway - Proteção de Microserviços**
+```java
+// Cenário: API Gateway protegendo microserviços
+@Component
+public class ApiGatewayRateLimiter {
+    
+    private final RateLimiter rateLimiter;
+    
+    public boolean checkRateLimit(String serviceName, String clientId, String plan) {
+        
+        // Rate limiting por serviço e plano
+        String key = String.format("%s:%s:%s", serviceName, clientId, plan);
+        RateLimitConfig config = getServiceRateLimit(serviceName, plan);
+        
+        return rateLimiter.isAllowed(key, config.getMaxRequests(), config.getWindow());
+    }
+    
+    private RateLimitConfig getServiceRateLimit(String serviceName, String plan) {
+        Map<String, RateLimitConfig> serviceLimits = Map.of(
+            "user-service", Map.of(
+                "basic", new RateLimitConfig(100, Duration.ofMinutes(1)),
+                "premium", new RateLimitConfig(500, Duration.ofMinutes(1)),
+                "enterprise", new RateLimitConfig(2000, Duration.ofMinutes(1))
+            ),
+            "payment-service", Map.of(
+                "basic", new RateLimitConfig(10, Duration.ofMinutes(1)),
+                "premium", new RateLimitConfig(50, Duration.ofMinutes(1)),
+                "enterprise", new RateLimitConfig(200, Duration.ofMinutes(1))
+            ),
+            "notification-service", Map.of(
+                "basic", new RateLimitConfig(50, Duration.ofMinutes(1)),
+                "premium", new RateLimitConfig(200, Duration.ofMinutes(1)),
+                "enterprise", new RateLimitConfig(1000, Duration.ofMinutes(1))
+            )
+        );
+        
+        return serviceLimits.getOrDefault(serviceName, Map.of())
+                          .getOrDefault(plan, new RateLimitConfig(100, Duration.ofMinutes(1)));
+    }
+}
+```
+
+**🔐 Security - Proteção Contra Ataques**
+```java
+// Cenário: Sistema de autenticação com proteção contra brute force
+@Service
+public class AuthenticationService {
+    
+    private final RateLimiter rateLimiter;
+    
+    public AuthenticationResult authenticate(String username, String password, String clientIp) {
+        
+        // Rate limiting por IP
+        String ipKey = "auth_attempts:ip:" + clientIp;
+        if (!rateLimiter.isAllowed(ipKey, 20, Duration.ofMinutes(1))) {
+            throw new TooManyAttemptsException("Too many authentication attempts from IP");
+        }
+        
+        // Rate limiting por username
+        String userKey = "auth_attempts:user:" + username;
+        if (!rateLimiter.isAllowed(userKey, 5, Duration.ofMinutes(1))) {
+            throw new TooManyAttemptsException("Too many authentication attempts for user");
+        }
+        
+        // Autenticação mais restritiva após falhas
+        String userFailureKey = "auth_failures:user:" + username;
+        Long failureCount = rateLimiter.getCount(userFailureKey);
+        
+        if (failureCount > 3) {
+            // Após 3 falhas, só permite 1 tentativa por minuto
+            if (!rateLimiter.isAllowed(userFailureKey, 1, Duration.ofMinutes(1))) {
+                throw new AccountTemporarilyLockedException("Account temporarily locked");
+            }
+        }
+        
+        AuthenticationResult result = performAuthentication(username, password);
+        
+        if (!result.isSuccess()) {
+            // Incrementar contador de falhas
+            rateLimiter.increment(userFailureKey, Duration.ofMinutes(15));
+        } else {
+            // Resetar contador em caso de sucesso
+            rateLimiter.reset(userFailureKey);
+        }
+        
+        return result;
+    }
+}
+```
+
+**🎮 Gaming - Proteção Contra Cheating**
+```java
+// Cenário: Jogo online com proteção contra spam de ações
+@Service
+public class GameActionService {
+    
+    private final RateLimiter rateLimiter;
+    
+    public ActionResult performAction(String playerId, GameAction action) {
+        
+        // Diferentes limites por tipo de ação
+        RateLimitConfig config = getActionRateLimit(action.getType());
+        String key = playerId + ":" + action.getType();
+        
+        if (!rateLimiter.isAllowed(key, config.getMaxRequests(), config.getWindow())) {
+            return ActionResult.rateLimited("Action rate limit exceeded");
+        }
+        
+        return gameEngine.processAction(playerId, action);
+    }
+    
+    private RateLimitConfig getActionRateLimit(ActionType actionType) {
+        switch (actionType) {
+            case MOVE:
+                return new RateLimitConfig(100, Duration.ofSeconds(1)); // 100 movimentos por segundo
+            case ATTACK:
+                return new RateLimitConfig(10, Duration.ofSeconds(1));  // 10 ataques por segundo
+            case CHAT_MESSAGE:
+                return new RateLimitConfig(5, Duration.ofSeconds(1));   // 5 mensagens por segundo
+            case ITEM_USE:
+                return new RateLimitConfig(20, Duration.ofSeconds(1));  // 20 itens por segundo
+            default:
+                return new RateLimitConfig(50, Duration.ofSeconds(1));
+        }
+    }
+}
+```
+
+### **⚖️ Trade-offs:**
+- **✅ Prós:** Proteção contra abuso, controle de recursos, fair use, monetização
+- **❌ Contras:** Pode impactar usuários legítimos, complexidade de configuração, overhead de processamento
+
 ```java
 // Implementação de Rate Limiting
 @Component
@@ -440,6 +1082,288 @@ Padrões de escalabilidade são como sistemas de transporte urbano: permitem que
 ### **🎓 Padrões Fundamentais:**
 
 **1. Database Sharding Pattern**
+
+### **🎯 Quando Usar:**
+- ✅ **Banco de dados muito grande** (TBs de dados, bilhões de registros)
+- ✅ **Alta concorrência** (milhares de writes simultâneos)
+- ✅ **Crescimento horizontal** (quando scaling vertical não é viável)
+- ✅ **Dados geograficamente distribuídos** (latência regional)
+
+### **🚫 Quando NÃO Usar:**
+- ❌ **Bancos pequenos** (menos de 100GB, queries simples)
+- ❌ **Muitas queries cross-shard** (joins complexos entre shards)
+- ❌ **Transações distribuídas** (operações ACID entre shards)
+- ❌ **Equipe pequena** (complexidade de manutenção)
+
+### **💡 Casos de Uso Reais:**
+
+**🏦 Banking - Sharding por Região**
+```java
+// Cenário: Banco nacional com milhões de clientes
+@Component
+public class BankingShardingStrategy {
+    
+    private final Map<String, DataSource> regionalShards;
+    
+    public BankingShardingStrategy() {
+        this.regionalShards = Map.of(
+            "SOUTHEAST", createDataSource("bank_southeast_db"),
+            "NORTHEAST", createDataSource("bank_northeast_db"),
+            "SOUTH", createDataSource("bank_south_db"),
+            "NORTH", createDataSource("bank_north_db"),
+            "MIDWEST", createDataSource("bank_midwest_db")
+        );
+    }
+    
+    public DataSource getShardForCustomer(String customerId) {
+        // Usar primeiros dígitos do CPF para determinar região
+        String cpf = customerService.getCpf(customerId);
+        String region = getRegionByCpf(cpf);
+        
+        return regionalShards.get(region);
+    }
+    
+    private String getRegionByCpf(String cpf) {
+        // Algoritmo baseado nos primeiros 3 dígitos do CPF
+        int code = Integer.parseInt(cpf.substring(0, 3));
+        
+        if (code >= 011 && code <= 139) return "SOUTHEAST";
+        if (code >= 140 && code <= 229) return "NORTHEAST";
+        if (code >= 230 && code <= 289) return "SOUTH";
+        if (code >= 290 && code <= 329) return "NORTH";
+        return "MIDWEST";
+    }
+}
+
+@Repository
+public class CustomerRepository {
+    
+    private final BankingShardingStrategy shardingStrategy;
+    
+    public Customer findByCustomerId(String customerId) {
+        DataSource shard = shardingStrategy.getShardForCustomer(customerId);
+        JdbcTemplate template = new JdbcTemplate(shard);
+        
+        return template.queryForObject(
+            "SELECT * FROM customers WHERE customer_id = ?",
+            new CustomerRowMapper(),
+            customerId
+        );
+    }
+    
+    // Query cross-shard para compliance/auditoria
+    public List<Customer> findCustomersByNameAcrossAllShards(String name) {
+        List<Customer> allCustomers = new ArrayList<>();
+        
+        // Executar em paralelo em todos os shards
+        List<CompletableFuture<List<Customer>>> futures = 
+            shardingStrategy.getAllShards().values().stream()
+                .map(dataSource -> CompletableFuture.supplyAsync(() -> {
+                    JdbcTemplate template = new JdbcTemplate(dataSource);
+                    return template.query(
+                        "SELECT * FROM customers WHERE name LIKE ?",
+                        new CustomerRowMapper(),
+                        "%" + name + "%"
+                    );
+                }))
+                .collect(Collectors.toList());
+        
+        // Aguardar e combinar resultados
+        futures.forEach(future -> {
+            try {
+                allCustomers.addAll(future.get());
+            } catch (Exception e) {
+                log.error("Error querying shard", e);
+            }
+        });
+        
+        return allCustomers;
+    }
+}
+```
+
+**🛒 E-commerce - Sharding por Categoria**
+```java
+// Cenário: Marketplace com milhões de produtos
+@Component
+public class ProductShardingStrategy {
+    
+    private final Map<String, DataSource> categoryShards;
+    
+    public ProductShardingStrategy() {
+        this.categoryShards = Map.of(
+            "ELECTRONICS", createDataSource("products_electronics_db"),
+            "CLOTHING", createDataSource("products_clothing_db"),
+            "BOOKS", createDataSource("products_books_db"),
+            "HOME", createDataSource("products_home_db"),
+            "SPORTS", createDataSource("products_sports_db")
+        );
+    }
+    
+    public DataSource getShardForProduct(String productId) {
+        // Usar hash do ID para distribuir uniformemente
+        String category = productService.getCategory(productId);
+        return categoryShards.get(category);
+    }
+}
+
+@Service
+public class ProductService {
+    
+    private final ProductShardingStrategy shardingStrategy;
+    
+    public Product findProduct(String productId) {
+        DataSource shard = shardingStrategy.getShardForProduct(productId);
+        JdbcTemplate template = new JdbcTemplate(shard);
+        
+        return template.queryForObject(
+            "SELECT * FROM products WHERE product_id = ?",
+            new ProductRowMapper(),
+            productId
+        );
+    }
+    
+    // Search cross-shard para busca global
+    public List<Product> searchProducts(String searchTerm) {
+        List<Product> allProducts = new ArrayList<>();
+        
+        // Buscar em paralelo em todos os shards
+        List<CompletableFuture<List<Product>>> futures = 
+            shardingStrategy.getAllShards().values().stream()
+                .map(dataSource -> CompletableFuture.supplyAsync(() -> {
+                    JdbcTemplate template = new JdbcTemplate(dataSource);
+                    return template.query(
+                        "SELECT * FROM products WHERE name LIKE ? OR description LIKE ? LIMIT 100",
+                        new ProductRowMapper(),
+                        "%" + searchTerm + "%",
+                        "%" + searchTerm + "%"
+                    );
+                }))
+                .collect(Collectors.toList());
+        
+        // Combinar e ordenar resultados
+        futures.forEach(future -> {
+            try {
+                allProducts.addAll(future.get());
+            } catch (Exception e) {
+                log.error("Error searching in shard", e);
+            }
+        });
+        
+        // Ordenar por relevância e limitar
+        return allProducts.stream()
+            .sorted((p1, p2) -> compareRelevance(p1, p2, searchTerm))
+            .limit(50)
+            .collect(Collectors.toList());
+    }
+}
+```
+
+**📱 Social Media - Sharding por Usuário**
+```java
+// Cenário: Rede social com bilhões de posts
+@Component
+public class SocialMediaShardingStrategy {
+    
+    private final ConsistentHashRing hashRing;
+    private final Map<String, DataSource> userShards;
+    
+    public SocialMediaShardingStrategy() {
+        this.userShards = Map.of(
+            "shard_001", createDataSource("social_shard_001"),
+            "shard_002", createDataSource("social_shard_002"),
+            "shard_003", createDataSource("social_shard_003"),
+            "shard_004", createDataSource("social_shard_004"),
+            "shard_005", createDataSource("social_shard_005")
+        );
+        
+        this.hashRing = new ConsistentHashRing(userShards.keySet());
+    }
+    
+    public DataSource getShardForUser(String userId) {
+        String shardKey = hashRing.getNode(userId);
+        return userShards.get(shardKey);
+    }
+}
+
+@Service
+public class PostService {
+    
+    private final SocialMediaShardingStrategy shardingStrategy;
+    
+    public Post createPost(String userId, CreatePostRequest request) {
+        DataSource shard = shardingStrategy.getShardForUser(userId);
+        JdbcTemplate template = new JdbcTemplate(shard);
+        
+        String postId = UUID.randomUUID().toString();
+        template.update(
+            "INSERT INTO posts (id, user_id, content, created_at) VALUES (?, ?, ?, ?)",
+            postId, userId, request.getContent(), Instant.now()
+        );
+        
+        return findPost(postId, userId);
+    }
+    
+    public List<Post> getUserPosts(String userId) {
+        DataSource shard = shardingStrategy.getShardForUser(userId);
+        JdbcTemplate template = new JdbcTemplate(shard);
+        
+        return template.query(
+            "SELECT * FROM posts WHERE user_id = ? ORDER BY created_at DESC LIMIT 50",
+            new PostRowMapper(),
+            userId
+        );
+    }
+    
+    // Timeline agregado de múltiplos usuários
+    public List<Post> getTimelinePosts(String userId, List<String> followingUserIds) {
+        // Agrupar usuários por shard
+        Map<String, List<String>> usersByShards = followingUserIds.stream()
+            .collect(Collectors.groupingBy(
+                followingUserId -> shardingStrategy.getShardKey(followingUserId)
+            ));
+        
+        List<Post> timelinePosts = new ArrayList<>();
+        
+        // Buscar posts em paralelo por shard
+        List<CompletableFuture<List<Post>>> futures = usersByShards.entrySet().stream()
+            .map(entry -> CompletableFuture.supplyAsync(() -> {
+                DataSource shard = shardingStrategy.getShardByKey(entry.getKey());
+                JdbcTemplate template = new JdbcTemplate(shard);
+                
+                String userIds = entry.getValue().stream()
+                    .map(id -> "'" + id + "'")
+                    .collect(Collectors.joining(","));
+                
+                return template.query(
+                    "SELECT * FROM posts WHERE user_id IN (" + userIds + ") " +
+                    "ORDER BY created_at DESC LIMIT 20",
+                    new PostRowMapper()
+                );
+            }))
+            .collect(Collectors.toList());
+        
+        // Combinar e ordenar por data
+        futures.forEach(future -> {
+            try {
+                timelinePosts.addAll(future.get());
+            } catch (Exception e) {
+                log.error("Error fetching timeline posts", e);
+            }
+        });
+        
+        return timelinePosts.stream()
+            .sorted(Comparator.comparing(Post::getCreatedAt).reversed())
+            .limit(50)
+            .collect(Collectors.toList());
+    }
+}
+```
+
+### **⚖️ Trade-offs:**
+- **✅ Prós:** Escalabilidade horizontal, performance, distribuição geográfica
+- **❌ Contras:** Complexidade alta, queries cross-shard custosas, rebalanceamento difícil
+
 ```java
 // Implementação de Database Sharding
 @Component
@@ -1506,6 +2430,82 @@ public class ProcessPaymentStep extends SagaStep {
 
 ---
 
+## 🎯 **Quadro Comparativo de Padrões**
+
+### **📊 Guia de Decisão Rápida**
+
+| Padrão | Problema que Resolve | Quando Usar | Complexidade | Exemplo Real |
+|--------|---------------------|-------------|-------------|-------------|
+| **Circuit Breaker** | Falhas em cascata | Serviços externos instáveis | 🟡 Média | Gateway de pagamento |
+| **Bulkhead** | Recursos compartilhados | Operações com prioridades diferentes | 🟡 Média | Banking (transações vs relatórios) |
+| **Retry** | Falhas transientes | Operações idempotentes | 🟢 Baixa | Consultas a APIs externas |
+| **Rate Limiting** | Abuso de recursos | Proteção contra spam/DDoS | 🟡 Média | API pública |
+| **Database Sharding** | Escalabilidade de dados | Bancos muito grandes | 🔴 Alta | Redes sociais |
+| **CQRS** | Leitura vs Escrita | Diferentes padrões de acesso | 🔴 Alta | E-commerce |
+| **Cache-Aside** | Latência de dados | Dados frequentemente acessados | 🟢 Baixa | Catálogo de produtos |
+| **API Gateway** | Múltiplos serviços | Arquitetura microserviços | 🟡 Média | Agregador de APIs |
+| **Database per Service** | Acoplamento de dados | Isolamento entre serviços | 🔴 Alta | Microserviços |
+| **Event-Driven** | Comunicação assíncrona | Sistemas distribuídos | 🔴 Alta | Processamento de pedidos |
+| **Eventual Consistency** | Consistência imediata | Sistemas distribuídos | 🔴 Alta | Sincronização de dados |
+| **Saga Pattern** | Transações distribuídas | Operações cross-service | 🔴 Alta | Processamento de compras |
+
+### **🎯 Matriz de Aplicação por Domínio**
+
+| Domínio | Padrões Mais Usados | Padrões Ocasionais | Padrões Raramente Usados |
+|---------|-------------------|-------------------|-------------------------|
+| **🏦 Banking** | Circuit Breaker, Bulkhead, Retry, Rate Limiting | CQRS, Saga Pattern | Database Sharding |
+| **🛒 E-commerce** | Cache-Aside, CQRS, Event-Driven, Saga Pattern | Database Sharding, API Gateway | Bulkhead |
+| **📱 Social Media** | Database Sharding, Cache-Aside, Rate Limiting | Event-Driven, Eventual Consistency | Saga Pattern |
+| **🎮 Gaming** | Rate Limiting, Cache-Aside, Event-Driven | Circuit Breaker, Bulkhead | Database Sharding |
+| **🏥 Healthcare** | Circuit Breaker, Bulkhead, Retry, Saga Pattern | CQRS, Rate Limiting | Database Sharding |
+| **📺 Streaming** | Cache-Aside, CDN, Rate Limiting | Database Sharding, Event-Driven | Saga Pattern |
+
+### **⚡ Padrões por Escala do Sistema**
+
+#### **🔰 Startup (< 1M usuários)**
+- ✅ **Essenciais:** Circuit Breaker, Retry, Cache-Aside
+- ⚠️ **Considerar:** Rate Limiting, CQRS
+- ❌ **Evitar:** Database Sharding, Saga Pattern
+
+#### **🚀 Crescimento (1M - 10M usuários)**
+- ✅ **Essenciais:** Todos os padrões de resiliência, CQRS, Event-Driven
+- ⚠️ **Considerar:** Database Sharding, Eventual Consistency
+- ❌ **Evitar:** Over-engineering
+
+#### **🌟 Enterprise (> 10M usuários)**
+- ✅ **Essenciais:** Todos os padrões são relevantes
+- ⚠️ **Considerar:** Múltiplos padrões combinados
+- ❌ **Evitar:** Soluções monolíticas
+
+### **🔄 Padrões Complementares**
+
+#### **Combinações Poderosas:**
+1. **Circuit Breaker + Retry + Rate Limiting** = Resiliência completa
+2. **CQRS + Event-Driven + Saga Pattern** = Arquitetura orientada a eventos
+3. **Database Sharding + Cache-Aside + Eventual Consistency** = Escalabilidade massiva
+4. **API Gateway + Bulkhead + Circuit Breaker** = Microserviços resilientes
+
+#### **Antipadrões (Evitar):**
+1. **Retry + Non-Idempotent Operations** = Duplicação de dados
+2. **Database Sharding + Complex Joins** = Performance ruim
+3. **Saga Pattern + Tight Coupling** = Complexidade desnecessária
+4. **Rate Limiting + Critical Operations** = Degradação de serviço
+
+### **📈 Métricas de Sucesso por Padrão**
+
+| Padrão | Métricas Principais | Valores Objetivo | Alertas |
+|--------|-------------------|------------------|---------|
+| **Circuit Breaker** | Failure rate, Success rate | <5% failure | >10% failure |
+| **Bulkhead** | Resource utilization | <80% per pool | >90% per pool |
+| **Retry** | Retry rate, Success after retry | <20% retry | >50% retry |
+| **Rate Limiting** | Requests blocked, False positives | <5% blocked | >10% blocked |
+| **Cache-Aside** | Cache hit rate, Miss latency | >80% hit rate | <60% hit rate |
+| **CQRS** | Read/Write latency, Sync lag | <100ms, <1s | >500ms, >5s |
+| **Database Sharding** | Shard utilization, Cross-shard queries | Balanced, <10% | Unbalanced, >20% |
+| **Event-Driven** | Event processing time, Dead letters | <1s, <1% | >5s, >5% |
+
+---
+
 ## 🎯 **Exercícios Práticos**
 
 ### **Exercício 1: Sistema de E-commerce Resiliente**
@@ -1538,6 +2538,204 @@ public class ProcessPaymentStep extends SagaStep {
 ---
 
 ## 🚀 **Perguntas de Entrevista sobre System Design**
+
+### **💼 Cenários de Entrevista Avançados**
+
+#### **🏦 Cenário Banking: Sistema PIX Nacional**
+**Pergunta:** "Projete um sistema PIX que processe 1 milhão de transações por minuto, com disponibilidade de 99.99% e latência < 500ms."
+
+**Resposta estruturada:**
+```
+1. Padrões de Resiliência:
+   - Circuit Breaker para comunicação com bancos
+   - Bulkhead para separar PIX de outros serviços
+   - Retry para falhas transientes de rede
+   - Rate Limiting por banco/CPF
+
+2. Padrões de Escalabilidade:
+   - Database Sharding por região/banco
+   - CQRS para separar consultas de transações
+   - Cache-Aside para dados de contas frequentes
+
+3. Padrões de Distribuição:
+   - API Gateway para roteamento por banco
+   - Event-Driven para notificações
+   - Database per Service para isolamento
+
+4. Padrões de Consistência:
+   - Saga Pattern para transações cross-banco
+   - Eventual Consistency para sincronização
+   - Compensação para reversão de erros
+```
+
+#### **🛒 Cenário E-commerce: Black Friday**
+**Pergunta:** "Como você garantiria que um e-commerce suporte 10x o tráfego normal durante a Black Friday?"
+
+**Resposta estruturada:**
+```
+1. Preparação (Semanas antes):
+   - Cache warming para produtos populares
+   - Database Sharding para catálogo
+   - CDN para assets estáticos
+   - Load testing com padrões realistas
+
+2. Proteção (Durante o evento):
+   - Rate Limiting dinâmico por usuário
+   - Circuit Breaker para fornecedores
+   - Bulkhead para separar checkout de navegação
+   - Queue-based processing para pedidos
+
+3. Fallback (Em caso de problemas):
+   - Página estática para produtos populares
+   - Retry com backoff exponencial
+   - Graceful degradation de features
+   - Waitlist para produtos esgotados
+
+4. Monitoramento:
+   - Métricas em tempo real
+   - Alertas automáticos
+   - Dashboards por padrão
+   - Rollback automático
+```
+
+#### **📱 Cenário Social Media: Feed Global**
+**Pergunta:** "Projete o feed de uma rede social como Twitter com 500 milhões de usuários ativos."
+
+**Resposta estruturada:**
+```
+1. Armazenamento:
+   - Database Sharding por usuário
+   - Cache-Aside para timeline
+   - Event-Driven para posts
+   - CDN para mídia
+
+2. Processamento:
+   - Push model para usuários com poucos seguidores
+   - Pull model para celebrities
+   - Híbrido para otimização
+   - Batch processing para analytics
+
+3. Resiliência:
+   - Circuit Breaker para serviços externos
+   - Eventual Consistency para feeds
+   - Retry para falhas de entrega
+   - Bulkhead para diferentes tipos de conteúdo
+
+4. Escalabilidade:
+   - Read replicas por região
+   - Microserviços por funcionalidade
+   - Auto-scaling baseado em métricas
+   - Geographic distribution
+```
+
+### **🎯 Perguntas sobre Padrões Específicos**
+
+#### **1. "Quando você NÃO usaria Circuit Breaker?"**
+**Resposta esperada:**
+- Operações internas com alta confiabilidade
+- Sistemas com poucos requests (< 100/min)
+- Quando não há estratégia de fallback
+- Operações críticas que não podem falhar
+
+#### **2. "Como você escolheria entre CQRS e Database Sharding?"**
+**Resposta esperada:**
+- **CQRS:** Padrões de leitura/escrita diferentes, necessidade de views especializadas
+- **Database Sharding:** Volume de dados muito grande, scaling horizontal necessário
+- **Ambos:** Sistemas muito grandes com necessidades específicas
+
+#### **3. "Explique os trade-offs do Saga Pattern"**
+**Resposta esperada:**
+- **Prós:** Transações distribuídas, eventual consistency, resiliência
+- **Contras:** Complexidade, debugging difícil, compensação manual
+- **Quando usar:** Operações críticas cross-service
+
+#### **4. "Como você implementaria Rate Limiting distribuído?"**
+**Resposta esperada:**
+- Redis com sliding window
+- Consistent hashing para distribuição
+- Aproximação com eventual consistency
+- Métricas por nó + agregação
+
+### **🔥 Perguntas Pegadinha**
+
+#### **"Você usaria todos os padrões em um sistema?"**
+**Resposta correta:** 
+- Não! Cada padrão tem custos e complexidade
+- Análise de trade-offs é essencial
+- Começar simples e evoluir
+- Métricas guiam decisões
+
+#### **"Database Sharding resolve todos os problemas de escala?"**
+**Resposta correta:**
+- Não! Cria novos problemas (cross-shard queries, rebalancing)
+- Só para problemas específicos de volume
+- Outras soluções podem ser melhores (cache, read replicas)
+- Última opção, não primeira
+
+#### **"Rate Limiting sempre melhora a experiência do usuário?"**
+**Resposta correta:**
+- Não! Pode impactar usuários legítimos
+- Balanceamento entre proteção e usabilidade
+- Diferentes estratégias por contexto
+- Monitoramento de false positives
+
+### **📊 Matriz de Avaliação em Entrevistas**
+
+| Critério | Iniciante | Pleno | Sênior | Especialista |
+|----------|-----------|--------|--------|--------------|
+| **Conhecimento** | Conhece poucos padrões | Conhece padrões principais | Conhece todos + aplicações | Conhece + criação própria |
+| **Aplicação** | Aplica sem contexto | Aplica com contexto básico | Escolhe padrão correto | Combina múltiplos padrões |
+| **Trade-offs** | Não considera | Considera básicos | Analisa profundamente | Quantifica impactos |
+| **Escala** | Pensa pequeno | Pensa médio | Pensa grande | Pensa em evolução |
+| **Experiência** | Teórico | Alguns projetos | Múltiplos projetos | Mentor/arquiteto |
+
+---
+
+## 📚 **Resumo Executivo**
+
+### **🎯 Takeaways Principais**
+
+1. **Não existe bala de prata** - Cada padrão resolve problemas específicos
+2. **Trade-offs são inevitáveis** - Ganhos em uma área custam em outra
+3. **Contexto é rei** - Tamanho, escala e domínio influenciam escolhas
+4. **Evolução gradual** - Comece simples, adicione complexidade conforme necessário
+5. **Métricas guiam decisões** - Meça antes de otimizar
+
+### **⚡ Padrões por Prioridade**
+
+#### **🥇 Prioridade 1 (Todo sistema precisa):**
+- Circuit Breaker
+- Retry Pattern
+- Cache-Aside
+
+#### **🥈 Prioridade 2 (Sistemas em crescimento):**
+- Rate Limiting
+- Bulkhead
+- CQRS
+
+#### **🥉 Prioridade 3 (Sistemas complexos):**
+- Database Sharding
+- Event-Driven Architecture
+- Saga Pattern
+
+### **🚀 Próximos Passos para Dominar**
+
+1. **Implemente cada padrão** - Hands-on é essencial
+2. **Combine padrões** - Veja como trabalham juntos
+3. **Meça impactos** - Benchmarks e métricas
+4. **Estude casos reais** - Netflix, Amazon, Google
+5. **Pratique entrevistas** - Simule cenários complexos
+
+### **💡 Dicas Finais**
+
+- **Para entrevistas:** Sempre discuta trade-offs
+- **Para implementação:** Comece simples, evolua gradualmente
+- **Para manutenção:** Monitore métricas de cada padrão
+- **Para equipe:** Documente decisões e contexto
+
+**Lembre-se:** System Design é uma arte que combina ciência, experiência e intuição. A prática leva à perfeição! 🎯
+
+---
 
 ### **1. "Como você lidaria com hot partitions em um sistema distribuído?"**
 
